@@ -45,3 +45,32 @@ def get_joint_angles(landmark_array: np.ndarray) -> dict:
         p3 = landmark_array[c][:3]
         angles[name] = calculate_angle(p1, p2, p3)
     return angles
+
+
+def get_posture_metrics(landmark_array: np.ndarray) -> dict:
+    metrics = {}
+
+    ear = landmark_array[7][:3] if len(landmark_array) > 7 else None
+    nose = landmark_array[0][:3] if len(landmark_array) > 0 else None
+    ls = landmark_array[11][:3]
+    rs = landmark_array[12][:3]
+    lh = landmark_array[23][:3]
+    rh = landmark_array[24][:3]
+
+    neck = np.mean([ls, rs], axis=0)
+    mid_hip = np.mean([lh, rh], axis=0)
+
+    if ear is not None and nose is not None:
+        forward_angle = calculate_angle(neck, nose, ear)
+        metrics["forward_head"] = forward_angle
+
+    shoulder_slope = abs(ls[1] - rs[1])
+    metrics["shoulder_slope"] = float(shoulder_slope)
+
+    spine_angle = calculate_angle(neck, mid_hip, nose)
+    metrics["spine_curve"] = spine_angle
+
+    neck_tilt = calculate_angle(lh, neck, nose)
+    metrics["neck_tilt"] = neck_tilt
+
+    return metrics

@@ -1,31 +1,53 @@
+import os
 import time
+
 import cv2
 import numpy as np
-from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QComboBox, QLabel, QMessageBox, QFileDialog,
-)
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QImage, QPixmap
+from PySide6.QtWidgets import (
+    QComboBox,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
+from live_pose_detection.core.calculator import (
+    extract_landmark_array,
+    get_joint_angles,
+    get_posture_metrics,
+)
 from live_pose_detection.core.detector import PoseDetector
-from live_pose_detection.core.calculator import extract_landmark_array, get_joint_angles
-from live_pose_detection.ui.overlay import PoseOverlay
-from live_pose_detection.ui.panels import AnglePanel, StatsPanel
-from live_pose_detection.features.exercise import SquatDetector, PushUpDetector
+from live_pose_detection.features.exercise import PushUpDetector, SquatDetector
+from live_pose_detection.features.posture import PostureDetector
 from live_pose_detection.features.recorder import SessionRecorder
+from live_pose_detection.ui.overlay import PoseOverlay
+from live_pose_detection.ui.panels import (
+    AnglePanel,
+    ChartPanel,
+    PostureFeedbackPanel,
+    StatsPanel,
+)
 
 EXERCISE_DETECTORS = {
     "Free": (None, None),
     "Squat": (SquatDetector, "left_knee"),
     "Push-up": (PushUpDetector, "left_elbow"),
+    "Posture": (PostureDetector, None),
 }
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Live Pose Detection")
-        self.setMinimumSize(1280, 720)
+        self.setMinimumSize(1400, 800)
         self.detector = PoseDetector()
         self.overlay = PoseOverlay()
         self.recorder = SessionRecorder()
@@ -53,6 +75,8 @@ class MainWindow(QMainWindow):
         controls = QHBoxLayout()
         self.start_btn = QPushButton("Start Camera")
         self.start_btn.clicked.connect(self.toggle_camera)
+        self.open_btn = QPushButton("Open Video")
+        self.open_btn.clicked.connect(self.open_video)
         self.exercise_combo = QComboBox()
         self.exercise_combo.addItems(list(EXERCISE_DETECTORS.keys()))
         self.exercise_combo.currentTextChanged.connect(self._on_exercise_changed)
@@ -61,25 +85,66 @@ class MainWindow(QMainWindow):
         self.screenshot_btn = QPushButton("Screenshot")
         self.screenshot_btn.clicked.connect(self.take_screenshot)
         controls.addWidget(self.start_btn)
+        controls.addWidget(self.open_btn)
         controls.addWidget(self.exercise_combo)
         controls.addWidget(self.record_btn)
         controls.addWidget(self.screenshot_btn)
         left_layout.addLayout(controls)
         main_layout.addLayout(left_layout, stretch=2)
 
-        right_layout = QVBoxLayout()
+        tabs = QTabWidget()
         self.angle_panel = AnglePanel()
         self.stats_panel = StatsPanel()
-        right_layout.addWidget(self.angle_panel)
+        self.posture_panel = PostureFeedbackPanel()
+        self.chart_panel = ChartPanel()
+
+        right_content = QWidget()
+        right_layout = QVBoxLayout(right_content)
         right_layout.addWidget(self.stats_panel)
+        right_layout.addWidget(self.posture_panel)
         right_layout.addStretch()
-        main_layout.addLayout(right_layout, stretch=1)
+
+        tabs.addTab(self.angle_panel, "Angles")
+        tabs.addTab(right_content, "Stats")
+        tabs.addTab(self.chart_panel, "Chart")
+        main_layout.addWidget(tabs, stretch=1)
 
     def _on_exercise_changed(self, mode: str):
         cls, angle_key = EXERCISE_DETECTORS.get(mode, (None, None))
         self.exercise_detector = cls() if cls else None
         self.exercise_angle_key = angle_key
         self.stats_panel.update_stats(mode, 0, "--")
+        self.posture_panel.setVisible(mode == "Posture")
+
+    def open_camera(self, source=0):
+        if self.capture is not None:
+            self.timer.stop()
+            self.capture.release()
+        self.capture = cv2.VideoCapture(source)
+        if not self.capture.isOpened():
+            QMessageBox.warning(self, "Error", "Cannot open camera")
+            return
+        self.timer.start(30)
+        self.start_btn.setText("Stop Camera")
+
+    def load_video(self, path: str):
+        if self.capture is not None:
+            self.timer.stop()
+            self.capture.release()
+        self.capture = cv2.VideoCapture(path)
+        if not self.capture.isOpened():
+            QMessageBox.warning(self, "Error", "Cannot open video file")
+            return
+        self.timer.start(30)
+        self.start_btn.setText("Stop Camera")
+        self.setWindowTitle(f"Live Pose Detection — {os.path.basename(path)}")
+
+    def open_video(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open Video", "", "Video Files (*.mp4 *.avi *.mov *.mkv)"
+        )
+        if path:
+            self.load_video(path)
 
     def toggle_camera(self):
         if self.capture is not None:
@@ -88,17 +153,15 @@ class MainWindow(QMainWindow):
             self.capture = None
             self.start_btn.setText("Start Camera")
             self.cam_label.clear()
+            self.setWindowTitle("Live Pose Detection")
         else:
-            self.capture = cv2.VideoCapture(0)
-            if not self.capture.isOpened():
-                QMessageBox.warning(self, "Error", "Cannot open camera")
-                return
-            self.timer.start(30)
-            self.start_btn.setText("Stop Camera")
+            self.open_camera(0)
 
     def process_frame(self):
         ret, frame = self.capture.read()
         if not ret:
+            if not isinstance(self.capture, type(None)) and not self.capture.isOpened():
+                pass
             return
 
         self.frame_count += 1
@@ -108,29 +171,38 @@ class MainWindow(QMainWindow):
             self.frame_count = 0
             self.last_time = time.time()
 
+        mode = self.exercise_combo.currentText()
         result = self.detector.detect(frame)
         angles = {}
         arr = None
         form_score = None
+
         if result and result.pose_landmarks:
             landmarks_list = result.pose_landmarks[0]
             arr = extract_landmark_array(landmarks_list)
             angles = get_joint_angles(arr)
-            if self.exercise_detector and self.exercise_angle_key:
+            self.angle_panel.update_angles(angles)
+            self.chart_panel.update_chart(angles)
+
+            if mode == "Posture":
+                metrics = get_posture_metrics(arr)
+                pr = self.exercise_detector.update(metrics)
+                form_score = pr.score
+                self.posture_panel.update_metrics(metrics, pr.feedback)
+                self.stats_panel.update_stats("Posture", 0, f"{pr.score:.0f}%")
+            elif self.exercise_detector and self.exercise_angle_key:
                 angle_val = angles.get(self.exercise_angle_key)
                 if angle_val is not None:
                     ex_result = self.exercise_detector.update(angle_val)
                     form_score = ex_result.score
                     self.stats_panel.update_stats(
-                        self.exercise_combo.currentText(),
-                        ex_result.reps,
-                        ex_result.feedback or "--",
+                        mode, ex_result.reps, ex_result.feedback or "--"
                     )
+
             frame = self.overlay.draw(
                 frame, arr, angles=angles,
                 fps=self.fps, form_score=form_score,
             )
-            self.angle_panel.update_angles(angles)
 
         if self.recorder.recording:
             self.recorder.write_frame(frame, arr, angles)
@@ -143,6 +215,10 @@ class MainWindow(QMainWindow):
                 self.cam_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation
             )
         )
+
+        if self.capture and not isinstance(self.capture, type(None)):
+            if hasattr(self.capture, "get") and self.capture.get(cv2.CAP_PROP_POS_FRAMES) == self.capture.get(cv2.CAP_PROP_FRAME_COUNT) - 1:
+                pass
 
     def toggle_recording(self):
         if not self.recorder.recording:
