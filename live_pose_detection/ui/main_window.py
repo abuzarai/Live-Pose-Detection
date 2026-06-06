@@ -94,22 +94,24 @@ class MainWindow(QMainWindow):
         ret, frame = self.capture.read()
         if not ret:
             return
-        landmarks = self.detector.detect(frame)
+        result = self.detector.detect(frame)
         angles = {}
-        if landmarks:
-            arr = extract_landmark_array(landmarks.landmark)
+        arr = None
+        if result and result.pose_landmarks:
+            landmarks_list = result.pose_landmarks[0]
+            arr = extract_landmark_array(landmarks_list)
             frame = self.overlay.draw(frame, arr)
             angles = get_joint_angles(arr)
             self.angle_panel.update_angles(angles)
             if self.exercise_detector and "left_knee" in angles:
-                result = self.exercise_detector.update(
+                ex_result = self.exercise_detector.update(
                     angles["left_knee"], left_knee=angles["left_knee"]
                 )
                 self.stats_panel.update_stats(
-                    self.exercise_combo.currentText(), result.reps, result.feedback or "--"
+                    self.exercise_combo.currentText(), ex_result.reps, ex_result.feedback or "--"
                 )
         if self.recorder.recording:
-            self.recorder.write_frame(frame, arr if landmarks else None, angles)
+            self.recorder.write_frame(frame, arr, angles)
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         qimg = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
