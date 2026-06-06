@@ -12,9 +12,10 @@ class PoseDetector:
             min_detection_confidence=min_detection_confidence,
             min_tracking_confidence=min_tracking_confidence,
         )
-        self.timestamp = None
 
-    def detect(self, frame: np.ndarray) -> list | None:
+    def detect(self, frame: np.ndarray):
+        if frame is None:
+            return None
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         results = self.pose.process(rgb)
         if results.pose_landmarks:
@@ -22,4 +23,11 @@ class PoseDetector:
         return None
 
     def close(self):
-        self.pose.close()
+        if hasattr(self, "pose"):
+            self.pose.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
