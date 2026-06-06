@@ -1,0 +1,7 @@
+{
+  "camera_source": 0,
+  "confidence_threshold": 0.5,
+  "exercise_mode": "free",
+  "show_skeleton": true,
+  "show_keypoints": true
+}
