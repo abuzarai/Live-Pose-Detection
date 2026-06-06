@@ -41,5 +41,6 @@ class PushUpDetector:
         elif elbow_angle > self.threshold_up and self.stage == "down":
             self.stage = "up"
             self.rep_count += 1
-            return ExerciseResult(self.rep_count, self.stage, 100, "Good form")
+            depth_score = max(0, min(100, 100 * (1 - elbow_angle / 180)))
+            return ExerciseResult(self.rep_count, self.stage, depth_score, "Good form")
         return ExerciseResult(self.rep_count, self.stage, 0, "")

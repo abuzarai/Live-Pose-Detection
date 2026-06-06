@@ -1,3 +1,4 @@
+import time
 import cv2
 import numpy as np
 from PySide6.QtWidgets import (
@@ -15,9 +16,9 @@ from live_pose_detection.features.exercise import SquatDetector, PushUpDetector
 from live_pose_detection.features.recorder import SessionRecorder
 
 EXERCISE_DETECTORS = {
-    "Free": None,
-    "Squat": SquatDetector,
-    "Push-up": PushUpDetector,
+    "Free": (None, None),
+    "Squat": (SquatDetector, "left_knee"),
+    "Push-up": (PushUpDetector, "left_elbow"),
 }
 
 class MainWindow(QMainWindow):
@@ -32,6 +33,10 @@ class MainWindow(QMainWindow):
         self.timer = QTimer()
         self.timer.timeout.connect(self.process_frame)
         self.exercise_detector = None
+        self.exercise_angle_key = None
+        self.last_time = time.time()
+        self.frame_count = 0
+        self.fps = 0.0
         self._setup_ui()
 
     def _setup_ui(self):
@@ -71,8 +76,9 @@ class MainWindow(QMainWindow):
         main_layout.addLayout(right_layout, stretch=1)
 
     def _on_exercise_changed(self, mode: str):
-        cls = EXERCISE_DETECTORS.get(mode)
+        cls, angle_key = EXERCISE_DETECTORS.get(mode, (None, None))
         self.exercise_detector = cls() if cls else None
+        self.exercise_angle_key = angle_key
         self.stats_panel.update_stats(mode, 0, "--")
 
     def toggle_camera(self):
@@ -94,24 +100,41 @@ class MainWindow(QMainWindow):
         ret, frame = self.capture.read()
         if not ret:
             return
+
+        self.frame_count += 1
+        elapsed = time.time() - self.last_time
+        if elapsed >= 1.0:
+            self.fps = self.frame_count / elapsed
+            self.frame_count = 0
+            self.last_time = time.time()
+
         result = self.detector.detect(frame)
         angles = {}
         arr = None
+        form_score = None
         if result and result.pose_landmarks:
             landmarks_list = result.pose_landmarks[0]
             arr = extract_landmark_array(landmarks_list)
-            frame = self.overlay.draw(frame, arr)
             angles = get_joint_angles(arr)
+            if self.exercise_detector and self.exercise_angle_key:
+                angle_val = angles.get(self.exercise_angle_key)
+                if angle_val is not None:
+                    ex_result = self.exercise_detector.update(angle_val)
+                    form_score = ex_result.score
+                    self.stats_panel.update_stats(
+                        self.exercise_combo.currentText(),
+                        ex_result.reps,
+                        ex_result.feedback or "--",
+                    )
+            frame = self.overlay.draw(
+                frame, arr, angles=angles,
+                fps=self.fps, form_score=form_score,
+            )
             self.angle_panel.update_angles(angles)
-            if self.exercise_detector and "left_knee" in angles:
-                ex_result = self.exercise_detector.update(
-                    angles["left_knee"], left_knee=angles["left_knee"]
-                )
-                self.stats_panel.update_stats(
-                    self.exercise_combo.currentText(), ex_result.reps, ex_result.feedback or "--"
-                )
+
         if self.recorder.recording:
             self.recorder.write_frame(frame, arr, angles)
+
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = rgb.shape
         qimg = QImage(rgb.data, w, h, ch * w, QImage.Format_RGB888)
