@@ -8,3 +8,4 @@ live_pose_detection/data/sessions/*
 !live_pose_detection/data/sessions/.gitkeep
 .superpowers/
 *.egg-info/
+docs/
